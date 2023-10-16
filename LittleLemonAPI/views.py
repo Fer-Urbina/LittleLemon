@@ -14,39 +14,41 @@ from rest_framework.throttling import UserRateThrottle
 from rest_framework.permissions import IsAdminUser
 from django.contrib.auth.models import User, Group
 
-@api_view(['GET','POST'])
+@api_view(['GET', 'POST'])
 def menu_items(request):
-    #return Response('list of books'), status=status.HTTP_200_OK)
-    if(request.method=='GET'):
+    if request.method == 'GET':
         items = MenuItem.objects.select_related('category').all()
-        category_name = request.query_params.get('category')
+        category_id = request.query_params.get('category')
         to_price = request.query_params.get('to_price')
         search = request.query_params.get('search')
-        ordering = request.query_params.get('perpage',default=2)
-        perpage = request.query_params.get('page',default=1)
-        page = request.query_params.get('page',default=1)
-        if category_name:
-            items = items.filter(category__title=category_name)
+        ordering = request.query_params.get('ordering', '')  
+        perpage = int(request.query_params.get('perpage', 10)) 
+        page = request.query_params.get('page', 1)
+        
+        if category_id:
+            items = items.filter(category__title=category_id)
         if to_price:
-            items = items.filter(price=to_price)
+            items = items.filter(price__lte=to_price)
         if search:
-            items = items.filter(title__contains=search)
+            items = items.filter(title__icontains=search)
         if ordering:
             ordering_fields = ordering.split(",")
             items = items.order_by(*ordering_fields)
 
-        paginator = Paginator(items,per_page=perpage)
+        paginator = Paginator(items, per_page=perpage)
         try:
             items = paginator.page(number=page)
         except EmptyPage:
             items = []
+
         serialized_item = MenuItemSerializer(items, many=True)
         return Response(serialized_item.data)
-    elif request.method=='POST':
+    elif request.method == 'POST':
         serialized_item = MenuItemSerializer(data=request.data)
         serialized_item.is_valid(raise_exception=True)
         serialized_item.save()
-        return Response(serialized_item.validated_data,status.HTTP_201_CREATED)
+        return Response(serialized_item.validated_data, status=status.HTTP_201_CREATED)
+
 
 class CategoriesView(generics.ListCreateAPIView):
     queryset = Category.objects.all()
@@ -122,12 +124,12 @@ def assign_order_to_delivery(request, order_id):
         username = request.data.get('username')
         if username:
             try:
-                delivery_person = User.objects.get(username=username)
+                delivery_crew = User.objects.get(username=username)
             except User.DoesNotExist:
                 return Response({"message": "Delivery person not found."}, status=status.HTTP_404_NOT_FOUND)
 
             # Assign the order to the selected delivery person
-            order.delivery_person = delivery_person
+            order.delivery_crew = delivery_crew
             order.save()
             return Response({"message": "Order assigned to the delivery person successfully."})
 
@@ -137,7 +139,7 @@ def assign_order_to_delivery(request, order_id):
 @permission_classes([IsAuthenticated])
 def get_orders_for_delivery(request):
     # Get orders assigned to the authenticated user as the delivery person
-    orders = Order.objects.filter(delivery_person=request.user)
+    orders = Order.objects.filter(delivery_crew=request.user)
     serialized_orders = OrderSerializer(orders, many=True)
     return Response(serialized_orders.data)
 
@@ -149,7 +151,7 @@ def mark_order_as_delivered(request, order_id):
     except Order.DoesNotExist:
         return Response({"message":"Order not found."}, status=status.HTTP_404_NOT_FOUND)
     
-    if order.delivery_person != request.user:
+    if order.delivery_crew != request.user:
         return Response({"message":"You are not authorized to update this order"}, status=status.HTTP_403_FORBIDDEN)
     
     # Update the order status to "Delivered" 
