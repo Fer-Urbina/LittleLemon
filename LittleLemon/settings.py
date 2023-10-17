@@ -136,6 +136,10 @@ REST_FRAMEWORK = {
         'rest_framework.authentication.TokenAuthentication',
         'rest_framework.authentication.SessionAuthentication',
     ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon':'2/minute',
+        'user':'5/minute',
+    },
     'DEFAULT_FILTER_CLASSES': [
         'rest_framework.filters.OrderingFilter',
         'rest_framework.filters.SearchFilter',
