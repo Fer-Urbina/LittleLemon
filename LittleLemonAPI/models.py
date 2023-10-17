@@ -29,7 +29,13 @@ class Cart(models.Model):
 class Order(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     delivery_crew = models.ForeignKey(User, on_delete=models.SET_NULL, related_name="delivery_crew", null=True)
-    status = models.BooleanField(db_index=True, default=0)
+
+    STATUS_CHOICES = (
+        ('Processing', 'Processing'),
+        ('Delivered', 'Delivered'),
+    )
+
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='Processing')
     total = models.DecimalField(max_digits=6, decimal_places=2, default=0)
     date = models.DateField(db_index=True, default=timezone.now)
 
