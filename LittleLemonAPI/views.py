@@ -1,7 +1,9 @@
 from django.shortcuts import render, get_object_or_404
+from django_filters import rest_framework as django_filters
+from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
-from rest_framework import generics
+from rest_framework import generics, filters
 from .models import MenuItem, Category, Order, Cart, OrderItem
 from .serializers import MenuItemSerializer, CategorySerializer, OrderSerializer, CartItemSerializer
 from rest_framework import status
@@ -10,9 +12,10 @@ from django.core.paginator import Paginator, EmptyPage
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework.throttling import UserRateThrottle
-
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAdminUser
 from django.contrib.auth.models import User, Group
+from django.db import connection
 
 @api_view(['GET', 'POST'])
 def menu_items(request):
@@ -35,20 +38,17 @@ def menu_items(request):
             ordering_fields = ordering.split(",")
             items = items.order_by(*ordering_fields)
 
-        paginator = Paginator(items, per_page=perpage)
-        try:
-            items = paginator.page(number=page)
-        except EmptyPage:
-            items = []
-
+        paginator = PageNumberPagination()
+        paginator.page_size = perpage
+        items = paginator.paginate_queryset(items, request)
         serialized_item = MenuItemSerializer(items, many=True)
-        return Response(serialized_item.data)
+        return paginator.get_paginated_response(serialized_item.data)
+
     elif request.method == 'POST':
         serialized_item = MenuItemSerializer(data=request.data)
         serialized_item.is_valid(raise_exception=True)
         serialized_item.save()
         return Response(serialized_item.validated_data, status=status.HTTP_201_CREATED)
-
 
 class CategoriesView(generics.ListCreateAPIView):
     queryset = Category.objects.all()
@@ -57,9 +57,25 @@ class CategoriesView(generics.ListCreateAPIView):
 class MenuItemsView(generics.ListCreateAPIView):
     queryset = MenuItem.objects.all()
     serializer_class = MenuItemSerializer
-    ordering_fields = ['price','inventory',]
-    filterset_fields = ['price','inventory',]
-    search_fields = ['category']
+    filter_backends = [filters.OrderingFilter, filters.SearchFilter, django_filters.DjangoFilterBackend]
+    ordering_fields = ['price', 'inventory']
+    search_fields = ['title']
+    filter_fields = ['category__title','price']
+
+    def get(self, request, *args, **kwargs):
+        items = self.filter_queryset(self.get_queryset())
+        paginator = PageNumberPagination()
+        paginator.page_size = 3
+        results = paginator.paginate_queryset(items, request)
+        serializer = self.get_serializer(results, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+    def post(self, request, *args, **kwargs):
+        serialized_item = MenuItemSerializer(data=request.data)
+        if serialized_item.is_valid():
+            serialized_item.save()
+            return Response(serialized_item.data, status=status.HTTP_201_CREATED)
+        return Response(serialized_item.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class SingleMenuItemView(generics.RetrieveUpdateAPIView, generics.DestroyAPIView):
     queryset = MenuItem.objects.all()
@@ -89,7 +105,6 @@ def update_item_of_the_day(request, item_id):
         except MenuItem.DoesNotExist:
             return Response({"message": "Menu item not found."}, status=status.HTTP_404_NOT_FOUND)
         
-        # Update the 'item_of_the_day' field for the chosen menu item
         menu_item.item_of_the_day = True
         menu_item.save()
         
@@ -115,7 +130,6 @@ def assign_order_to_delivery(request, order_id):
         return Response({"message": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
 
     if request.method == 'GET':
-        # Retrieve the order details
         serialized_order = OrderSerializer(order)
         return Response(serialized_order.data)
 
@@ -138,7 +152,6 @@ def assign_order_to_delivery(request, order_id):
 @api_view(['GET']) # Delivery crew can access orders assigned to them
 @permission_classes([IsAuthenticated])
 def get_orders_for_delivery(request):
-    # Get orders assigned to the authenticated user as the delivery person
     orders = Order.objects.filter(delivery_crew=request.user)
     serialized_orders = OrderSerializer(orders, many=True)
     return Response(serialized_orders.data)
@@ -190,7 +203,6 @@ def add_to_cart(request):
 
     user = request.user
 
-    # Try to get the cart item, or create it if it doesn't exist
     cart_item, created = Cart.objects.get_or_create(user=user, menuitem=menu_item)
 
     if not created:
@@ -212,16 +224,13 @@ def delete_cart_item(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_order(request):
-    # Get the authenticated user
     user = request.user
     
-    # Get current cart items for the user
     cart_items = Cart.objects.filter(user=user)
     
     if not cart_items:
         return Response({"message": "No items in the cart"}, status=status.HTTP_400_BAD_REQUEST)
     
-    # Create a new order for the user
     order = Order.objects.create(user=user)
     
     # Add cart items to the order
@@ -232,7 +241,6 @@ def create_order(request):
             quantity=cart_item.quantity,
         )
     
-    # Clear the user's cart
     cart_items.delete()
     
     return Response({"message": "Order created successfully"}, status=status.HTTP_201_CREATED)
@@ -240,13 +248,10 @@ def create_order(request):
 @api_view(['GET']) # Customers can access previously added items in the cart
 @permission_classes([IsAuthenticated])
 def get_cart_items(request):
-    # Get the authenticated user
     user = request.user
     
-    # Get cart items associated with the user
     cart_items = Cart.objects.filter(user=user)
     
-    # Serialize and return the cart items
     serializer = CartItemSerializer(cart_items, many=True)
     
     return Response(serializer.data, status=status.HTTP_200_OK)
@@ -254,17 +259,13 @@ def get_cart_items(request):
 @api_view(['GET']) # Customers can browse their own orders
 @permission_classes([IsAuthenticated])
 def get_customer_orders(request):
-    # Get the authenticated user
     user = request.user
     
-    # If the user is not in the "Manager" group, restrict the query to their own orders.
     if not user.groups.filter(name='Manager').exists():
         orders = Order.objects.filter(user=user)
     else:
-        # Managers can see all orders.
         orders = Order.objects.all()
     
-    # Serialize and return the orders
     serializer = OrderSerializer(orders, many=True)
     
     return Response(serializer.data, status=status.HTTP_200_OK)
